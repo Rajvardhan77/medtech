@@ -14,7 +14,7 @@ const ConfigSchema = z.object({
   ANTHROPIC_API_KEY: z.string().optional().default(''),
   STORAGE_DRIVER: z.enum(['local', 's3']).default('local'),
   LOCAL_UPLOAD_DIR: z.string().default('./uploads'),
-  FRONTEND_URL: z.string().default('http://localhost:3000'),
+  FRONTEND_URL: z.string().default('*'),
 });
 
 export const config = ConfigSchema.parse(process.env);

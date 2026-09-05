@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "medlens.html",
+      "use": "@vercel/static"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/(.*)",
+      "dest": "https://CLOUD_RUN_URL_PLACEHOLDER/api/"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/medlens.html"
+    }
+  ]
+}

@@ -472,19 +472,25 @@ const S = {
 let authToken = null;
 let currentPatientId = null;
 
+// API base URL: empty string = relative path (Vercel rewrites /api/* to Cloud Run)
+// On localhost, point directly at the local dev server.
+const API_BASE = (typeof window !== 'undefined' && window.location.hostname === 'localhost')
+  ? 'http://localhost:4000'
+  : '';
+
 async function authenticateWithApi(passcode){
   const clean = (passcode || '').trim();
   const email = (clean.includes('@') ? clean : `patient_${clean.toLowerCase().replace(/[^a-z0-9]/g, '') || 'demo'}@medlens.dev`);
   const password = clean.length >= 8 ? clean : `${clean}Pass123!`;
 
-  let resp = await fetch('http://localhost:4000/api/auth/register', {
+  let resp = await fetch(API_BASE + '/api/auth/register', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, password, role: 'patient' })
   });
 
   if (resp.status === 409) {
-    resp = await fetch('http://localhost:4000/api/auth/login', {
+    resp = await fetch(API_BASE + '/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, password })
@@ -732,7 +738,7 @@ async function refreshConflictsFromApi(patient){
   const pid = currentPatientId || (patient ? patient.id : null);
   if(!authToken || !pid) return (patient ? patient.conflicts : []) || [];
   try{
-    const resp = await fetch(`http://localhost:4000/api/patients/${pid}/conflicts`, {
+    const resp = await fetch(`${API_BASE}/api/patients/${pid}/conflicts`, {
       headers: { 'Authorization': 'Bearer ' + authToken }
     });
     if(resp.ok){
@@ -758,7 +764,7 @@ async function createPatient(info){
   let apiPatientId = null;
   if(authToken){
     try {
-      const resp = await fetch('http://localhost:4000/api/patients', {
+      const resp = await fetch(API_BASE + '/api/patients', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -775,7 +781,7 @@ async function createPatient(info){
         currentPatientId = apiPatientId;
 
         // Automatically grant consent for ai_document_processing so subsequent document processing succeeds
-        await fetch(`http://localhost:4000/api/patients/${apiPatientId}/consent`, {
+        await fetch(`${API_BASE}/api/patients/${apiPatientId}/consent`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -787,7 +793,7 @@ async function createPatient(info){
         if(info.allergies){
           const list = info.allergies.split(',').map(s=>s.trim()).filter(Boolean);
           for(const allergen of list){
-            await fetch(`http://localhost:4000/api/patients/${apiPatientId}/allergies`, {
+            await fetch(`${API_BASE}/api/patients/${apiPatientId}/allergies`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
               body: JSON.stringify({ allergen })
@@ -798,7 +804,7 @@ async function createPatient(info){
         if(info.medications){
           const list = info.medications.split(',').map(s=>s.trim()).filter(Boolean);
           for(const medication_name of list){
-            await fetch(`http://localhost:4000/api/patients/${apiPatientId}/medications`, {
+            await fetch(`${API_BASE}/api/patients/${apiPatientId}/medications`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
               body: JSON.stringify({ medication_name })
@@ -973,10 +979,10 @@ function renderShell(){
 
 async function checkApiHealth(){
   try{
-    const res = await fetch('http://localhost:4000/api/health');
+    const res = await fetch(API_BASE + '/api/health');
     const el = document.getElementById('apiStatusBadge');
     if(res.ok && el){
-      el.innerHTML = '<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--flag-normal);"></span> API Online (port 4000)';
+      el.innerHTML = '<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--flag-normal);"></span> API Online';
       el.style.background = 'var(--teal-soft)';
       el.style.color = 'var(--teal-deep)';
     } else if(el){
@@ -1303,7 +1309,7 @@ function renderReportsTab(body, patient){
       }
 
       // Step 1: Upload to server
-      const uploadResp = await fetch(`http://localhost:4000/api/patients/${pid}/upload`, {
+      const uploadResp = await fetch(`${API_BASE}/api/patients/${pid}/upload`, {
         method: 'POST',
         headers: {
           'Authorization': 'Bearer ' + authToken
@@ -1318,7 +1324,7 @@ function renderReportsTab(body, patient){
       const docId = uploadData.document.id;
 
       // Step 2: Process document via backend
-      const processResp = await fetch(`http://localhost:4000/api/documents/${docId}/process`, {
+      const processResp = await fetch(`${API_BASE}/api/documents/${docId}/process`, {
         method: 'POST',
         headers: {
           'Authorization': 'Bearer ' + authToken
@@ -1503,7 +1509,7 @@ function renderConflictsTab(body, patient){
     try{
       const pid = currentPatientId || patient.id;
       if(authToken && pid){
-        await fetch(`http://localhost:4000/api/patients/${pid}/conflicts/detect`, {
+        await fetch(`${API_BASE}/api/patients/${pid}/conflicts/detect`, {
           method: 'POST',
           headers: { 'Authorization': 'Bearer ' + authToken }
         }).catch(()=>{});
