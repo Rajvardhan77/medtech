@@ -1,0 +1,380 @@
+// MedLens Prisma Relational Schema
+// Strict Provenance & Relational Auditing for Clinical Information Intelligence
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ----------------------------------------------------
+// ENUMS
+// ----------------------------------------------------
+
+enum Role {
+  patient
+  clinician
+  admin
+}
+
+enum ProvenanceSource {
+  user_input
+  ai_extracted
+  ai_generated
+  derived_rule
+}
+
+enum RangeStatus {
+  normal
+  low
+  high
+  critical_low
+  critical_high
+  not_provided_in_source
+}
+
+enum DocumentStatus {
+  pending
+  processing
+  processed
+  failed
+  quarantined
+}
+
+enum ConflictType {
+  allergy_medication
+  value_mismatch
+  identity_mismatch
+  duplicate_test
+}
+
+enum ConflictStatus {
+  open
+  acknowledged
+  resolved
+}
+
+enum DetectedBy {
+  rule
+  ai
+}
+
+// ----------------------------------------------------
+// MODELS
+// ----------------------------------------------------
+
+model User {
+  id            String    @id @default(uuid()) @db.Uuid
+  role          Role      @default(patient)
+  email         String    @unique
+  password_hash String
+  mfa_secret    String?
+  created_at    DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at    DateTime  @updatedAt @db.Timestamptz(6)
+
+  // Relationships
+  patient_profile   Patient?    @relation("UserPatientProfile")
+  created_patients  Patient[]   @relation("UserCreatedPatients")
+  uploaded_docs     Document[]  @relation("UserUploadedDocuments")
+  audit_logs        AuditLog[]  @relation("UserAuditLogs")
+
+  // Provenance reviews
+  reviewed_patients    Patient[]       @relation("PatientReviewer")
+  reviewed_symptoms    Symptom[]       @relation("SymptomReviewer")
+  reviewed_conditions  Condition[]     @relation("ConditionReviewer")
+  reviewed_allergies   Allergy[]       @relation("AllergyReviewer")
+  reviewed_medications Medication[]    @relation("MedicationReviewer")
+  reviewed_tests       ExtractedTest[] @relation("ExtractedTestReviewer")
+
+  @@map("users")
+}
+
+model Patient {
+  id         String    @id @default(uuid()) @db.Uuid
+  user_id    String?   @unique @db.Uuid
+  user       User?     @relation("UserPatientProfile", fields: [user_id], references: [id], onDelete: SetNull)
+
+  // Demographics (Low sensitivity / PHI encrypted at app layer if needed)
+  age        Int?
+  sex        String?   @db.VarChar(32)
+
+  // Provenance metadata
+  created_by            String            @db.Uuid
+  creator               User              @relation("UserCreatedPatients", fields: [created_by], references: [id], onDelete: Restrict)
+  source                ProvenanceSource  @default(user_input)
+  confidence            Float?            // 0.0 - 1.0
+  source_document_id    String?           @db.Uuid
+  source_document       Document?         @relation("PatientSourceDocument", fields: [source_document_id], references: [id], onDelete: SetNull)
+  reviewed_by           String?           @db.Uuid
+  reviewer              User?             @relation("PatientReviewer", fields: [reviewed_by], references: [id], onDelete: SetNull)
+  reviewed_at           DateTime?         @db.Timestamptz(6)
+
+  // Soft Delete Lifecycle (Preserves audit logs and history; never hard-deleted)
+  deleted_at            DateTime?         @db.Timestamptz(6)
+  created_at            DateTime          @default(now()) @db.Timestamptz(6)
+  updated_at            DateTime          @updatedAt @db.Timestamptz(6)
+
+  // Relational Records (All protected by soft-delete preserving constraints)
+  symptoms        Symptom[]
+  conditions      Condition[]
+  allergies       Allergy[]
+  medications     Medication[]
+  documents       Document[]        @relation("PatientDocuments")
+  extracted_tests ExtractedTest[]
+  conflict_flags  ConflictFlag[]
+  ai_summaries    AISummary[]
+  consent_records ConsentRecord[]
+
+  @@index([user_id])
+  @@index([created_by])
+  @@index([deleted_at])
+  @@map("patients")
+}
+
+model Symptom {
+  id                  String            @id @default(uuid()) @db.Uuid
+  patient_id          String            @db.Uuid
+  patient             Patient           @relation(fields: [patient_id], references: [id], onDelete: Restrict)
+  
+  // Encrypted at app layer if containing free-text notes
+  symptom_name        String
+  severity            String?           @db.VarChar(32)
+  notes               String?           @db.Text
+
+  // Provenance fields
+  source              ProvenanceSource  @default(user_input)
+  confidence          Float?
+  source_document_id  String?           @db.Uuid
+  source_document     Document?         @relation("SymptomSourceDoc", fields: [source_document_id], references: [id], onDelete: SetNull)
+  reviewed_by         String?           @db.Uuid
+  reviewer            User?             @relation("SymptomReviewer", fields: [reviewed_by], references: [id], onDelete: SetNull)
+  reviewed_at         DateTime?         @db.Timestamptz(6)
+
+  created_at          DateTime          @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime          @updatedAt @db.Timestamptz(6)
+
+  @@index([patient_id])
+  @@map("symptoms")
+}
+
+model Condition {
+  id                  String            @id @default(uuid()) @db.Uuid
+  patient_id          String            @db.Uuid
+  patient             Patient           @relation(fields: [patient_id], references: [id], onDelete: Restrict)
+
+  condition_name      String
+  clinical_status     String?           @db.VarChar(32) // active | recurrence | relapse | remission | resolved
+  onsetDate           DateTime?         @db.Date
+  notes               String?           @db.Text
+
+  // Provenance fields
+  source              ProvenanceSource  @default(user_input)
+  confidence          Float?
+  source_document_id  String?           @db.Uuid
+  source_document     Document?         @relation("ConditionSourceDoc", fields: [source_document_id], references: [id], onDelete: SetNull)
+  reviewed_by         String?           @db.Uuid
+  reviewer            User?             @relation("ConditionReviewer", fields: [reviewed_by], references: [id], onDelete: SetNull)
+  reviewed_at         DateTime?         @db.Timestamptz(6)
+
+  created_at          DateTime          @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime          @updatedAt @db.Timestamptz(6)
+
+  @@index([patient_id])
+  @@map("conditions")
+}
+
+model Allergy {
+  id                  String            @id @default(uuid()) @db.Uuid
+  patient_id          String            @db.Uuid
+  patient             Patient           @relation(fields: [patient_id], references: [id], onDelete: Restrict)
+
+  allergen            String
+  category            String?           @db.VarChar(64) // drug | food | environment | biologic
+  reaction            String?           @db.Text
+  severity            String?           @db.VarChar(32) // mild | moderate | severe
+
+  // Provenance fields
+  source              ProvenanceSource  @default(user_input)
+  confidence          Float?
+  source_document_id  String?           @db.Uuid
+  source_document     Document?         @relation("AllergySourceDoc", fields: [source_document_id], references: [id], onDelete: SetNull)
+  reviewed_by         String?           @db.Uuid
+  reviewer            User?             @relation("AllergyReviewer", fields: [reviewed_by], references: [id], onDelete: SetNull)
+  reviewed_at         DateTime?         @db.Timestamptz(6)
+
+  created_at          DateTime          @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime          @updatedAt @db.Timestamptz(6)
+
+  @@index([patient_id])
+  @@map("allergies")
+}
+
+model Medication {
+  id                  String            @id @default(uuid()) @db.Uuid
+  patient_id          String            @db.Uuid
+  patient             Patient           @relation(fields: [patient_id], references: [id], onDelete: Restrict)
+
+  medication_name     String
+  dosage              String?           @db.VarChar(128)
+  frequency           String?           @db.VarChar(128)
+  status              String?           @default("active") @db.VarChar(32)
+
+  // Provenance fields
+  source              ProvenanceSource  @default(user_input)
+  confidence          Float?
+  source_document_id  String?           @db.Uuid
+  source_document     Document?         @relation("MedicationSourceDoc", fields: [source_document_id], references: [id], onDelete: SetNull)
+  reviewed_by         String?           @db.Uuid
+  reviewer            User?             @relation("MedicationReviewer", fields: [reviewed_by], references: [id], onDelete: SetNull)
+  reviewed_at         DateTime?         @db.Timestamptz(6)
+
+  created_at          DateTime          @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime          @updatedAt @db.Timestamptz(6)
+
+  @@index([patient_id])
+  @@map("medications")
+}
+
+model Document {
+  id                  String            @id @default(uuid()) @db.Uuid
+  patient_id          String            @db.Uuid
+  patient             Patient           @relation("PatientDocuments", fields: [patient_id], references: [id], onDelete: Restrict)
+  uploaded_by         String            @db.Uuid
+  uploader            User              @relation("UserUploadedDocuments", fields: [uploaded_by], references: [id], onDelete: Restrict)
+
+  storage_key         String            @unique // Random UUID in S3/Object Storage (never original filename)
+  mime_type           String            @db.VarChar(128)
+  status              DocumentStatus    @default(pending)
+  checksum            String            @db.VarChar(128) // SHA-256 for integrity verification
+  raw_extracted_text  String?           @db.Text // Full OCR/PDF text extracted for side-by-side inspection
+  quarantine_reason   String?           @db.Text // Populated if status=quarantined
+
+  uploaded_at         DateTime          @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime          @updatedAt @db.Timestamptz(6)
+
+  // Reverse links for provenance
+  extracted_tests     ExtractedTest[]
+  patient_provenances Patient[]         @relation("PatientSourceDocument")
+  symptom_provenances Symptom[]         @relation("SymptomSourceDoc")
+  cond_provenances    Condition[]       @relation("ConditionSourceDoc")
+  allergy_provenances Allergy[]         @relation("AllergySourceDoc")
+  med_provenances     Medication[]      @relation("MedicationSourceDoc")
+
+  @@index([patient_id])
+  @@index([uploaded_by])
+  @@index([status])
+  @@map("documents")
+}
+
+model ExtractedTest {
+  id                      String            @id @default(uuid()) @db.Uuid
+  document_id             String            @db.Uuid
+  document                Document          @relation(fields: [document_id], references: [id], onDelete: Restrict)
+  patient_id              String            @db.Uuid
+  patient                 Patient           @relation(fields: [patient_id], references: [id], onDelete: Restrict)
+
+  test_name               String            @db.VarChar(255)
+  value                   String            @db.VarChar(64) // Stored as extracted string (e.g., "14.2", ">100")
+  numeric_value           Float?            // Parsed numeric scalar for charts and deterministic math
+  unit                    String?           @db.VarChar(64)
+
+  // STRICT SEPARATION: Raw range string vs. deterministic numeric bounds
+  reference_range_raw     String?           @db.Text
+  reference_range_low     Float?            // Parsed low bound (pure arithmetic)
+  reference_range_high    Float?            // Parsed high bound (pure arithmetic)
+  range_status            RangeStatus       @default(not_provided_in_source)
+
+  observation_date        DateTime?         @db.Timestamptz(6) // Vital for timeline and trend queries
+  raw_extraction_snippet  String            @db.Text // Exact verbatim text span for side-by-side verification
+
+  // Provenance fields
+  source                  ProvenanceSource  @default(ai_extracted)
+  confidence              Float             // 0.0 - 1.0 (Mandatory for extracted candidate)
+  source_document_id      String            @db.Uuid
+  reviewed_by             String?           @db.Uuid
+  reviewer                User?             @relation("ExtractedTestReviewer", fields: [reviewed_by], references: [id], onDelete: SetNull)
+  reviewed_at             DateTime?         @db.Timestamptz(6)
+
+  created_at              DateTime          @default(now()) @db.Timestamptz(6)
+  updated_at              DateTime          @updatedAt @db.Timestamptz(6)
+
+  @@index([patient_id])
+  @@index([document_id])
+  @@index([test_name])
+  @@index([observation_date])
+  @@index([range_status])
+  @@map("extracted_tests")
+}
+
+model ConflictFlag {
+  id                  String          @id @default(uuid()) @db.Uuid
+  patient_id          String          @db.Uuid
+  patient             Patient         @relation(fields: [patient_id], references: [id], onDelete: Restrict)
+
+  type                ConflictType
+  description         String          @db.Text
+  related_record_ids  String[]        // UUID references to related tests/allergies/medications
+  status              ConflictStatus  @default(open)
+  detected_by         DetectedBy      @default(rule)
+
+  created_at          DateTime        @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime        @updatedAt @db.Timestamptz(6)
+
+  @@index([patient_id])
+  @@index([status])
+  @@index([type])
+  @@map("conflict_flags")
+}
+
+model AISummary {
+  id                  String    @id @default(uuid()) @db.Uuid
+  patient_id          String    @db.Uuid
+  patient             Patient   @relation(fields: [patient_id], references: [id], onDelete: Restrict)
+
+  generated_at        DateTime  @default(now()) @db.Timestamptz(6)
+  model_version       String    @db.VarChar(64)
+  summary_text        String    @db.Text
+  cited_field_ids     String[]  // Structured field UUIDs supporting explainability
+  disclaimer_shown    Boolean   @default(true)
+
+  created_at          DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@index([patient_id])
+  @@map("ai_summaries")
+}
+
+model AuditLog {
+  id             String    @id @default(uuid()) @db.Uuid
+  user_id        String?   @db.Uuid
+  user           User?     @relation("UserAuditLogs", fields: [user_id], references: [id], onDelete: SetNull)
+
+  action         String    @db.VarChar(64) // READ | CREATE | UPDATE | DELETE | EXPORT | VERIFY
+  entity_type    String    @db.VarChar(64) // Patient | ExtractedTest | Medication | etc.
+  entity_id      String    @db.Uuid
+  field_changed  String?   @db.VarChar(128)
+  old_value      String?   @db.Text
+  new_value      String?   @db.Text
+  ip_address     String?   @db.VarChar(45)
+  timestamp      DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@index([user_id])
+  @@index([entity_type, entity_id])
+  @@index([timestamp])
+  @@map("audit_logs")
+}
+
+model ConsentRecord {
+  id            String    @id @default(uuid()) @db.Uuid
+  patient_id    String    @db.Uuid
+  patient       Patient   @relation(fields: [patient_id], references: [id], onDelete: Restrict)
+
+  consent_type  String    @db.VarChar(64) // ai_document_processing | clinician_sharing | data_export
+  granted_at    DateTime  @default(now()) @db.Timestamptz(6)
+  revoked_at    DateTime? @db.Timestamptz(6)
+
+  @@index([patient_id])
+  @@map("consent_records")
+}
