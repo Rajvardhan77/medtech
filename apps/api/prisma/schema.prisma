@@ -292,6 +292,7 @@ model ExtractedTest {
 
   // Provenance fields
   source                  ProvenanceSource  @default(ai_extracted)
+  extraction_method       String            @default("ai") @db.VarChar(64)
   confidence              Float             // 0.0 - 1.0 (Mandatory for extracted candidate)
   source_document_id      String            @db.Uuid
   reviewed_by             String?           @db.Uuid

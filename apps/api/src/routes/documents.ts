@@ -205,7 +205,8 @@ router.post('/documents/:id/process', authenticate, async (req: Request, res: Re
           range_status: status,
           observation_date: test.observation_date ? new Date(test.observation_date) : new Date(),
           raw_extraction_snippet: test.raw_extraction_snippet,
-          source: 'ai_extracted',
+          source: test.source ?? (extractionResult.extraction_method === 'regex_fallback' ? 'derived_rule' : 'ai_extracted'),
+          extraction_method: test.extraction_method ?? extractionResult.extraction_method ?? 'ai',
           confidence: test.confidence,
           source_document_id: doc.id,
         },
@@ -232,6 +233,7 @@ router.post('/documents/:id/process', authenticate, async (req: Request, res: Re
       tests: createdTests,
       diagnoses: extractionResult.diagnoses || [],
       medications: extractionResult.medications || [],
+      suspicious_content: extractionResult.suspicious_content ?? false,
     });
   } catch (err: any) {
     await prisma.document.update({

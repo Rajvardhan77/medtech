@@ -84,14 +84,19 @@ export async function detectRuleBasedConflicts(patientId: string): Promise<RuleC
   return evaluateRuleConflicts(allergies, medications);
 }
 
+export interface DetectedConflict {
+  description: string;
+  severity: 'high' | 'medium' | 'low';
+  detected_by: 'rule' | 'ai';
+  type?: 'allergy_medication' | 'duplicate_test' | 'value_mismatch';
+  relatedRecordIds?: string[];
+}
+
 /**
  * AI-assisted clinical conflict detection using Claude Sonnet.
+ * Falls back to deterministic evaluateRuleConflicts on error or zero credits.
  */
-export async function detectAIConflicts(patientId: string): Promise<Array<{ description: string; severity: 'high' | 'medium' | 'low' }>> {
-  if (!config.ANTHROPIC_API_KEY) {
-    return [];
-  }
-
+export async function detectAIConflicts(patientId: string): Promise<DetectedConflict[]> {
   const [conditions, allergies, medications, symptoms, tests] = await Promise.all([
     prisma.condition.findMany({ where: { patient_id: patientId } }),
     prisma.allergy.findMany({ where: { patient_id: patientId } }),
@@ -100,41 +105,73 @@ export async function detectAIConflicts(patientId: string): Promise<Array<{ desc
     prisma.extractedTest.findMany({ where: { patient_id: patientId } }),
   ]);
 
-  const anthropic = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY });
-  const payload = {
-    conditions: conditions.map((c) => ({ name: c.condition_name, status: c.clinical_status })),
-    allergies: allergies.map((a) => ({ allergen: a.allergen, category: a.category, severity: a.severity })),
-    medications: medications.map((m) => ({ name: m.medication_name, dosage: m.dosage, status: m.status })),
-    symptoms: symptoms.map((s) => ({ name: s.symptom_name, severity: s.severity })),
-    tests: tests.map((t) => ({ name: t.test_name, value: t.value, unit: t.unit, rangeStatus: t.range_status })),
-  };
+  if (config.ANTHROPIC_API_KEY) {
+    try {
+      const anthropic = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY });
+      const payload = {
+        conditions: conditions.map((c) => ({ name: c.condition_name, status: c.clinical_status })),
+        allergies: allergies.map((a) => ({ allergen: a.allergen, category: a.category, severity: a.severity })),
+        medications: medications.map((m) => ({ name: m.medication_name, dosage: m.dosage, status: m.status })),
+        symptoms: symptoms.map((s) => ({ name: s.symptom_name, severity: s.severity })),
+        tests: tests.map((t) => ({ name: t.test_name, value: t.value, unit: t.unit, rangeStatus: t.range_status })),
+      };
 
-  const response = await anthropic.messages.create({
-    model: 'claude-3-5-sonnet-20241022',
-    max_tokens: 900,
-    system: `You are a clinical-safety review assistant. You will receive a structured patient record JSON.
+      const response = await anthropic.messages.create({
+        model: 'claude-3-5-sonnet-20241022',
+        max_tokens: 900,
+        system: `You are a clinical-safety review assistant. You will receive a structured patient record JSON.
 Identify POTENTIAL inconsistencies or notable interactions for a human clinician to review — for example a prescribed medication that overlaps with a stated allergy, medications that are typically contraindicated together, or lab findings that seem to conflict with stated conditions.
 You are NOT diagnosing and NOT recommending any treatment or dosage change.
 Respond with ONLY valid JSON: an array of objects:
 [{"severity":"high"|"medium"|"low", "description": string}]
 If you find nothing notable, respond with []. Keep each description to one or two sentences and always frame findings as something to verify with a clinician, never as fact.`,
-    messages: [
-      {
-        role: 'user',
-        content: `Patient record JSON:\n${JSON.stringify(payload)}`,
-      },
-    ],
-  });
+        messages: [
+          {
+            role: 'user',
+            content: `Patient record JSON:\n${JSON.stringify(payload)}`,
+          },
+        ],
+      });
 
-  const contentBlock = response.content[0];
-  if (contentBlock && contentBlock.type === 'text') {
-    try {
-      const cleaned = contentBlock.text.replace(/```json/gi, '').replace(/```/g, '').trim();
-      const parsed = JSON.parse(cleaned);
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
-      return [];
+      const contentBlock = response.content[0];
+      if (contentBlock && contentBlock.type === 'text') {
+        try {
+          const cleaned = contentBlock.text.replace(/```json/gi, '').replace(/```/g, '').trim();
+          const parsed = JSON.parse(cleaned);
+          if (Array.isArray(parsed)) {
+            return parsed.map((p: any) => ({
+              description: p.description,
+              severity: p.severity || 'medium',
+              detected_by: 'ai' as const,
+              type: 'value_mismatch' as const,
+              relatedRecordIds: [],
+            }));
+          }
+        } catch {
+          // Fall through to fallback
+        }
+      }
+    } catch (err: any) {
+      console.warn(`[Conflict Detection] Anthropic API call failed (${err.message}). Falling back to evaluateRuleConflicts.`);
+      const fallbackRules = evaluateRuleConflicts(allergies, medications);
+      return fallbackRules.map((r) => ({
+        description: r.description,
+        severity: r.severity,
+        detected_by: 'rule' as const,
+        type: r.type,
+        relatedRecordIds: r.relatedRecordIds,
+      }));
     }
+  } else {
+    console.warn('[Conflict Detection] ANTHROPIC_API_KEY not configured. Falling back to evaluateRuleConflicts.');
+    const fallbackRules = evaluateRuleConflicts(allergies, medications);
+    return fallbackRules.map((r) => ({
+      description: r.description,
+      severity: r.severity,
+      detected_by: 'rule' as const,
+      type: r.type,
+      relatedRecordIds: r.relatedRecordIds,
+    }));
   }
 
   return [];

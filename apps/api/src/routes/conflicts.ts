@@ -79,13 +79,16 @@ router.post('/patients/:patientId/conflicts/detect', authenticate, async (req: R
   }
 
   for (const ac of aiConflicts) {
+    const isDuplicate = createdFlags.some((f) => f.description === ac.description);
+    if (isDuplicate) continue;
+
     const flag = await prisma.conflictFlag.create({
       data: {
         patient_id: patientId,
-        type: 'value_mismatch',
+        type: ac.type || 'value_mismatch',
         description: ac.description,
-        related_record_ids: [],
-        detected_by: 'ai',
+        related_record_ids: ac.relatedRecordIds || [],
+        detected_by: ac.detected_by || 'ai',
         status: 'open',
       },
     });
